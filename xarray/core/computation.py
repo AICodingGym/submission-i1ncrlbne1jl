@@ -1727,7 +1727,7 @@ def dot(*arrays, dims=None, **kwargs):
     return result.transpose(*all_dims, missing_dims="ignore")
 
 
-def where(cond, x, y):
+def where(cond, x, y, keep_attrs=None):
     """Return elements from `x` or `y` depending on `cond`.
 
     Performs xarray-like broadcasting across input arguments.
@@ -1743,6 +1743,11 @@ def where(cond, x, y):
         values to choose from where `cond` is True
     y : scalar, array, Variable, DataArray or Dataset
         values to choose from where `cond` is False
+    keep_attrs : bool or str or callable, optional
+        How to treat attrs. If True, keep the attrs of `x`, as
+        :py:meth:`DataArray.where` and :py:meth:`Dataset.where` do. Other
+        values are passed to :py:func:`apply_ufunc`. Defaults to the global
+        ``keep_attrs`` option, i.e. drop attrs.
 
     Returns
     -------
@@ -1808,8 +1813,13 @@ def where(cond, x, y):
     Dataset.where, DataArray.where :
         equivalent methods
     """
+    from .dataset import Dataset
+
+    if keep_attrs is None:
+        keep_attrs = _get_keep_attrs(default=False)
+
     # alignment for three arguments is complicated, so don't support it yet
-    return apply_ufunc(
+    result = apply_ufunc(
         duck_array_ops.where,
         cond,
         x,
@@ -1817,7 +1827,27 @@ def where(cond, x, y):
         join="exact",
         dataset_join="exact",
         dask="allowed",
+        keep_attrs=keep_attrs,
     )
+
+    if keep_attrs is True and hasattr(result, "attrs"):
+        # apply_ufunc's keep_attrs=True keeps the attrs of the first argument,
+        # which is `cond` here. Overwrite them with the attrs of `x` to be
+        # consistent with the `where` methods, where `x` is `self`. This can't
+        # be done with a combine_attrs callable: it only sees the attrs of
+        # xarray arguments (scalars are skipped, so the position of `x` varies)
+        # and is also applied to the coordinates, whose attrs should be kept.
+        if isinstance(result, Dataset) and not isinstance(x, Dataset):
+            # `x` was broadcast against each data variable
+            result.attrs = {}
+            for name in result.data_vars:
+                result[name].attrs = dict(getattr(x, "attrs", {}))
+        else:
+            result.attrs = dict(getattr(x, "attrs", {}))
+            for name in getattr(result, "data_vars", {}):
+                result[name].attrs = dict(x[name].attrs)
+
+    return result
 
 
 def polyval(coord, coeffs, degree_dim="degree"):
